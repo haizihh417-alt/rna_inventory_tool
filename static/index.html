@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RNA STOCK · 库存</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="bg-grid" aria-hidden="true"></div>
+<div class="bg-grain" aria-hidden="true"></div>
+
+<header class="topbar">
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+      <path d="M8 4 C 21 10, 21 22, 8 28" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+      <path d="M24 4 C 11 10, 11 22, 24 28" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" opacity=".5"/>
+      <path d="M11 8 L21 9 M21 14 L11 15 M11 20 L21 21 M21 26 L11 27" stroke="currentColor" stroke-width="1.4" opacity=".8"/>
+    </svg>
+    <div class="brand-text">
+      <div class="brand-title">RNA STOCK</div>
+      <div class="brand-sub">干粉 · 溶液 库存管理</div>
+    </div>
+  </div>
+  <nav class="mode-nav" aria-label="主导航">
+    <button class="mode-btn" data-view="purchase">购　入</button>
+    <button class="mode-btn" data-view="prepare">配制 / 使用</button>
+    <button class="mode-btn" data-view="warehouse">仓　库</button>
+  </nav>
+  <div class="topbar-meta">
+    <span class="pulse-dot" aria-hidden="true"></span>
+    <span class="meta-text">LOCAL · rna_inventory.db</span>
+  </div>
+</header>
+
+<div class="flow-strip" aria-hidden="true">
+  <span class="flow-step"><i>01</i>购入 · 干粉入库</span>
+  <span class="flow-arrow">→</span>
+  <span class="flow-step"><i>02</i>配制 · 干粉 → 溶液</span>
+  <span class="flow-arrow">→</span>
+  <span class="flow-step"><i>03</i>使用 · 消耗登记</span>
+</div>
+
+<main>
+  <!-- ============ 购入 ============ -->
+  <section class="view" id="view-purchase" data-view="purchase">
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-head">
+          <h2>购入登记</h2>
+          <span class="card-tag">干粉入库</span>
+        </div>
+        <div class="form">
+          <div class="field">
+            <label for="p-name">RNA 种类</label>
+            <input id="p-name" type="text" placeholder="如 siRNA-GAPDH" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="p-date">购入日期</label>
+            <input id="p-date" type="date">
+          </div>
+          <div class="field">
+            <label for="p-amount">购入量 <span class="unit">nmol</span></label>
+            <input id="p-amount" type="number" min="0" step="any" placeholder="0" class="num">
+          </div>
+          <div class="field" aria-hidden="true"></div>
+          <button class="btn primary wide" id="btn-purchase">提交入库</button>
+        </div>
+      </div>
+      <aside class="side-note">
+        <div class="note-title">说 明 NOTES</div>
+        <p>购入的 RNA 干粉登记后进入仓库「干粉」页。</p>
+        <p>同一种类、不同购入日期会保存为<b>相互独立</b>的条目。</p>
+        <p class="dim">购入量单位 nmol; ddH2O 量、使用量、剩余量单位 μL; 配制浓度 μM (= 购入量 ÷ ddH2O 量 × 1000)。</p>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ============ 配制 / 使用 ============ -->
+  <section class="view" id="view-prepare" data-view="prepare">
+    <div class="seg" id="mode-seg">
+      <button class="seg-btn active" data-mode="prepare">配　制<span>干粉 → 溶液</span></button>
+      <button class="seg-btn" data-mode="use">使　用<span>消耗溶液</span></button>
+    </div>
+
+    <!-- 配制 -->
+    <div class="card" id="form-prepare">
+      <div class="card-head">
+        <h2>配制</h2>
+        <span class="card-tag">干粉 → 溶液</span>
+      </div>
+      <div class="pickbar">
+        <button class="btn ghost" id="btn-pick-powder">选择干粉条目</button>
+        <div class="pickinfo" id="sel-powder">尚未选择</div>
+      </div>
+      <div class="form">
+        <div class="field"><label>RNA 种类</label><input id="pp-name" class="ro" readonly tabindex="-1"></div>
+        <div class="field"><label>购入日期</label><input id="pp-date" class="ro" readonly tabindex="-1"></div>
+        <div class="field"><label>购入量 <span class="unit">nmol</span></label><input id="pp-amount" class="ro num" readonly tabindex="-1"></div>
+        <div class="field"><label for="pp-prepdate">配制日期</label><input id="pp-prepdate" type="date"></div>
+        <div class="field"><label for="pp-water">ddH2O 量 <span class="unit">μL</span></label><input id="pp-water" type="number" min="0" step="any" placeholder="0" class="num"></div>
+        <div class="field" aria-hidden="true"></div>
+      </div>
+      <div class="lcd" id="lcd-conc">
+        <div class="lcd-corners" aria-hidden="true"></div>
+        <div class="lcd-label">配制浓度 CONCENTRATION</div>
+        <div class="lcd-value"><span id="conc-val">—</span><span class="lcd-unit">μM</span></div>
+        <div class="lcd-formula" id="conc-formula">请先选择干粉条目</div>
+      </div>
+      <button class="btn primary wide" id="btn-prepare">提交 · 生成溶液条目</button>
+    </div>
+
+    <!-- 使用 -->
+    <div class="card hidden" id="form-use">
+      <div class="card-head">
+        <h2>使用</h2>
+        <span class="card-tag">消耗登记</span>
+      </div>
+      <div class="pickbar">
+        <button class="btn ghost" id="btn-pick-solution">选择溶液条目</button>
+        <div class="pickinfo" id="sel-solution">尚未选择</div>
+      </div>
+      <div class="form">
+        <div class="field"><label>RNA 种类</label><input id="up-name" class="ro" readonly tabindex="-1"></div>
+        <div class="field"><label>购入日期</label><input id="up-date" class="ro" readonly tabindex="-1"></div>
+        <div class="field"><label>购入量 <span class="unit">nmol</span></label><input id="up-amount" class="ro num" readonly tabindex="-1"></div>
+        <div class="field"><label>配制日期</label><input id="up-pdate" class="ro" readonly tabindex="-1"></div>
+        <div class="field"><label>配制浓度 <span class="unit">μM</span></label><input id="up-conc" class="ro num" readonly tabindex="-1"></div>
+        <div class="field"><label>剩余量 (当前) <span class="unit">μL</span></label><input id="up-remain" class="ro num" readonly tabindex="-1"></div>
+        <div class="field"><label for="up-usage">使用量 <span class="unit">μL</span></label><input id="up-usage" type="number" min="0" step="any" placeholder="0" class="num"></div>
+        <div class="field" aria-hidden="true"></div>
+      </div>
+      <div class="lcd" id="lcd-remain">
+        <div class="lcd-corners" aria-hidden="true"></div>
+        <div class="lcd-label">使用后剩余量 REMAINING</div>
+        <div class="lcd-value"><span id="remain-val">—</span><span class="lcd-unit">μL</span></div>
+        <div class="lcd-formula" id="remain-formula">请先选择溶液条目</div>
+      </div>
+      <button class="btn primary wide" id="btn-use">提交 · 更新剩余量</button>
+    </div>
+  </section>
+
+  <!-- ============ 仓库 ============ -->
+  <section class="view" id="view-warehouse" data-view="warehouse">
+    <div class="card">
+      <div class="card-head">
+        <h2>仓库</h2>
+        <div class="wh-tabs">
+          <button class="wh-tab active" id="tab-powder">干粉<i class="count" id="cnt-powder">0</i></button>
+          <button class="wh-tab" id="tab-solution">溶液<i class="count" id="cnt-solution">0</i></button>
+        </div>
+      </div>
+      <div class="table-wrap" id="table-powder"></div>
+      <div class="table-wrap hidden" id="table-solution"></div>
+    </div>
+  </section>
+</main>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
