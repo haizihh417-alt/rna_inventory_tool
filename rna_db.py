@@ -69,15 +69,15 @@ def add_powder(conn, rna_name, purchase_date, amount):
 
 
 def list_powders(conn):
-    """按购入日期从早到晚排序(同日按登记先后)"""
+    """按购入日期从晚到早排序(同日按登记先后倒序)"""
     return [dict(r) for r in conn.execute(
-        "SELECT * FROM powder ORDER BY purchase_date, id")]
+        "SELECT * FROM powder ORDER BY purchase_date DESC, id DESC")]
 
 
 def list_solutions(conn):
-    """按购入日期从早到晚排序(同日按登记先后)"""
+    """按购入日期从晚到早排序(同日按登记先后倒序)"""
     return [dict(r) for r in conn.execute(
-        "SELECT * FROM solution ORDER BY purchase_date, id")]
+        "SELECT * FROM solution ORDER BY purchase_date DESC, id DESC")]
 
 
 def get_powder(conn, pid):

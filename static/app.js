@@ -259,6 +259,8 @@ function switchWhTab(t) {
   $("#tab-solution").classList.toggle("active", t === "solution");
   $("#table-powder").classList.toggle("hidden", t !== "powder");
   $("#table-solution").classList.toggle("hidden", t !== "solution");
+  /* 「添加溶液」仅溶液标签页可见 */
+  $("#btn-add-solution").classList.toggle("hidden", t !== "solution");
 }
 
 /* ---------- LCD 读数 ---------- */
