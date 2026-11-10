@@ -228,6 +228,10 @@ const state = {
   whTab: "powder",
   lastPowders: [],
   lastSolutions: [],
+  viewPowders: [],
+  viewSolutions: [],
+  powderFilter: "",
+  solutionFilter: "",
 };
 
 /* ---------- 视图切换 ---------- */
@@ -261,6 +265,9 @@ function switchWhTab(t) {
   $("#table-solution").classList.toggle("hidden", t !== "solution");
   /* 「添加溶液」仅溶液标签页可见 */
   $("#btn-add-solution").classList.toggle("hidden", t !== "solution");
+  /* 种类筛选: 干粉/溶液各自独立 */
+  $("#filter-powder").classList.toggle("hidden", t !== "powder");
+  $("#filter-solution").classList.toggle("hidden", t !== "solution");
 }
 
 /* ---------- LCD 读数 ---------- */
@@ -393,19 +400,42 @@ async function loadWarehouse() {
   const [p, s] = await Promise.all([apiGet("/api/powders"), apiGet("/api/solutions")]);
   state.lastPowders = p.powders;
   state.lastSolutions = s.solutions;
-  renderTable($("#table-powder"), POWDER_COLS, p.powders.map((x, i) => fmtPowder(x, i)), "powder");
-  renderTable($("#table-solution"), SOLUTION_COLS, s.solutions.map((x, i) => fmtSolution(x, i)), "solution");
-  $("#cnt-powder").textContent = p.powders.length;
-  $("#cnt-solution").textContent = s.solutions.length;
+  renderWarehouse();
+}
+
+/* 种类筛选下拉框(干粉/溶液各自独立) */
+function fillTypeFilter(sel, rows, current) {
+  const types = [...new Set(rows.map(r => r.rna_name))].sort((a, b) => a.localeCompare(b, "zh"));
+  const cur = current && types.includes(current) ? current : "";
+  sel.innerHTML =
+    `<option value="">全部种类 (${rows.length})</option>` +
+    types.map(t => {
+      const n = rows.filter(r => r.rna_name === t).length;
+      return `<option value="${esc(t)}"${t === cur ? " selected" : ""}>${esc(t)} (${n})</option>`;
+    }).join("");
+  return cur;
+}
+
+function renderWarehouse() {
+  state.powderFilter = fillTypeFilter($("#filter-powder"), state.lastPowders, state.powderFilter);
+  state.solutionFilter = fillTypeFilter($("#filter-solution"), state.lastSolutions, state.solutionFilter);
+  const powRows = state.lastPowders.filter(x => !state.powderFilter || x.rna_name === state.powderFilter);
+  const solRows = state.lastSolutions.filter(x => !state.solutionFilter || x.rna_name === state.solutionFilter);
+  state.viewPowders = powRows;
+  state.viewSolutions = solRows;
+  renderTable($("#table-powder"), POWDER_COLS, powRows.map((x, i) => fmtPowder(x, i)), "powder");
+  renderTable($("#table-solution"), SOLUTION_COLS, solRows.map((x, i) => fmtSolution(x, i)), "solution");
+  $("#cnt-powder").textContent = powRows.length;
+  $("#cnt-solution").textContent = solRows.length;
 }
 
 /* ---------- 仓库行操作: 编辑 / 复制 / 删除 / 添加溶液 ---------- */
 
 async function handleEdit(kind, id) {
   if (kind === "powder") {
-    const idx = state.lastPowders.findIndex(x => x.id === id);
+    const idx = state.viewPowders.findIndex(x => x.id === id);
     if (idx < 0) return toast("条目已不存在", "err");
-    const p = state.lastPowders[idx];
+    const p = state.viewPowders[idx];
     const v = await openFormModal({
       title: `编辑干粉条目 #${idx + 1}`,
       fields: [
@@ -419,9 +449,9 @@ async function handleEdit(kind, id) {
     const r = await apiPut(`/api/powders/${id}`, v);
     toast(r.msg);
   } else {
-    const idx = state.lastSolutions.findIndex(x => x.id === id);
+    const idx = state.viewSolutions.findIndex(x => x.id === id);
     if (idx < 0) return toast("条目已不存在", "err");
-    const s = state.lastSolutions[idx];
+    const s = state.viewSolutions[idx];
     const v = await openFormModal({
       title: `编辑溶液条目 #${idx + 1}`,
       fields: SOLUTION_FIELDS,
@@ -456,7 +486,7 @@ async function handleCopy(kind, id) {
 
 async function handleDelete(kind, id) {
   const label = kind === "powder" ? "干粉" : "溶液";
-  const arr = kind === "powder" ? state.lastPowders : state.lastSolutions;
+  const arr = kind === "powder" ? state.viewPowders : state.viewSolutions;
   const idx = arr.findIndex(x => x.id === id);
   const seq = idx >= 0 ? idx + 1 : "";
   const yes = await confirmDialog(`确定删除该<b>${label}条目 #${seq}</b> 吗?<br>删除后不可恢复。`);
@@ -603,6 +633,8 @@ function init() {
   });
   $("#btn-wh-refresh").addEventListener("click", () => wrap(loadWarehouse)());
   $("#btn-add-solution").addEventListener("click", () => wrap(handleAddSolution)());
+  $("#filter-powder").addEventListener("change", e => { state.powderFilter = e.target.value; renderWarehouse(); });
+  $("#filter-solution").addEventListener("change", e => { state.solutionFilter = e.target.value; renderWarehouse(); });
 
   switchView("purchase");
 }

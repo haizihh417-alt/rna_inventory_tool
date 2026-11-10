@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Cache-Control" content="no-cache">
 <title>RNA STOCK · 库存</title>
-<link rel="stylesheet" href="/static/style.css?v=6">
+<link rel="stylesheet" href="/static/style.css?v=8">
 </head>
 <body>
 <div class="bg-grid" aria-hidden="true"></div>
@@ -156,6 +156,11 @@
           <button class="wh-tab active" id="tab-powder">干粉<i class="count" id="cnt-powder">0</i></button>
           <button class="wh-tab" id="tab-solution">溶液<i class="count" id="cnt-solution">0</i></button>
         </div>
+        <div class="wh-filters">
+          <label class="filter-label" for="filter-powder">种类筛选</label>
+          <select class="filter-select" id="filter-powder"></select>
+          <select class="filter-select hidden" id="filter-solution"></select>
+        </div>
       </div>
       <div class="table-wrap" id="table-powder"></div>
       <div class="table-wrap hidden" id="table-solution"></div>
@@ -165,6 +170,6 @@
 
 <div id="modal-root"></div>
 <div id="toast-root"></div>
-<script src="/static/app.js?v=7"></script>
+<script src="/static/app.js?v=8"></script>
 </body>
 </html>
