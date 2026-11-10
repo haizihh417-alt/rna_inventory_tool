@@ -78,7 +78,11 @@ function pickEntry({ title, columns, rows, emptyHint }) {
     const body = $(".modal-body", overlay);
     const okBtn = $("[data-ok]", overlay);
     let pickedId = null;
-    const done = id => { overlay.remove(); resolve(id); };
+    const done = id => {
+      const row = rows.find(r => r.id === id);
+      overlay.remove();
+      resolve(row ? { id, seq: row.seq } : null);
+    };
 
     if (!rows.length) {
       body.innerHTML = `<div class="empty">${esc(emptyHint || "暂无条目")}</div>`;
@@ -326,13 +330,13 @@ function resetUse() {
 
 /* ---------- 仓库 ---------- */
 const POWDER_COLS = [
-  { key: "id", label: "编号" },
+  { key: "seq", label: "编号" },
   { key: "rna_name", label: "RNA 种类" },
   { key: "purchase_date", label: "购入日期" },
   { key: "amount", label: "购入量 (nmol)", align: "num" },
 ];
 const SOLUTION_COLS = [
-  { key: "id", label: "编号" },
+  { key: "seq", label: "编号" },
   { key: "rna_name", label: "RNA 种类" },
   { key: "purchase_date", label: "购入日期" },
   { key: "amount", label: "购入量 (nmol)", align: "num" },
@@ -372,12 +376,12 @@ function renderTable(el, columns, rows, kind) {
     `</tbody></table>`;
 }
 
-const fmtPowder = x => ({
-  id: x.id, rna_name: esc(x.rna_name), purchase_date: esc(x.purchase_date),
+const fmtPowder = (x, i) => ({
+  seq: i + 1, id: x.id, rna_name: esc(x.rna_name), purchase_date: esc(x.purchase_date),
   amount: fmtNum(x.amount),
 });
-const fmtSolution = x => ({
-  id: x.id, rna_name: esc(x.rna_name), purchase_date: esc(x.purchase_date),
+const fmtSolution = (x, i) => ({
+  seq: i + 1, id: x.id, rna_name: esc(x.rna_name), purchase_date: esc(x.purchase_date),
   amount: fmtNum(x.amount), prep_date: esc(x.prep_date),
   water_vol: fmtNum(x.water_vol), concentration: fmtNum(x.concentration, 4),
   remaining: fmtNum(x.remaining),
@@ -387,8 +391,8 @@ async function loadWarehouse() {
   const [p, s] = await Promise.all([apiGet("/api/powders"), apiGet("/api/solutions")]);
   state.lastPowders = p.powders;
   state.lastSolutions = s.solutions;
-  renderTable($("#table-powder"), POWDER_COLS, p.powders.map(fmtPowder), "powder");
-  renderTable($("#table-solution"), SOLUTION_COLS, s.solutions.map(fmtSolution), "solution");
+  renderTable($("#table-powder"), POWDER_COLS, p.powders.map((x, i) => fmtPowder(x, i)), "powder");
+  renderTable($("#table-solution"), SOLUTION_COLS, s.solutions.map((x, i) => fmtSolution(x, i)), "solution");
   $("#cnt-powder").textContent = p.powders.length;
   $("#cnt-solution").textContent = s.solutions.length;
 }
@@ -397,10 +401,11 @@ async function loadWarehouse() {
 
 async function handleEdit(kind, id) {
   if (kind === "powder") {
-    const p = state.lastPowders.find(x => x.id === id);
-    if (!p) return toast("条目已不存在", "err");
+    const idx = state.lastPowders.findIndex(x => x.id === id);
+    if (idx < 0) return toast("条目已不存在", "err");
+    const p = state.lastPowders[idx];
     const v = await openFormModal({
-      title: `编辑干粉条目 #${id}`,
+      title: `编辑干粉条目 #${idx + 1}`,
       fields: [
         { key: "rna_name", label: "RNA 种类", type: "text", required: true },
         { key: "purchase_date", label: "购入日期", type: "date", required: true },
@@ -412,10 +417,11 @@ async function handleEdit(kind, id) {
     const r = await apiPut(`/api/powders/${id}`, v);
     toast(r.msg);
   } else {
-    const s = state.lastSolutions.find(x => x.id === id);
-    if (!s) return toast("条目已不存在", "err");
+    const idx = state.lastSolutions.findIndex(x => x.id === id);
+    if (idx < 0) return toast("条目已不存在", "err");
+    const s = state.lastSolutions[idx];
     const v = await openFormModal({
-      title: `编辑溶液条目 #${id}`,
+      title: `编辑溶液条目 #${idx + 1}`,
       fields: SOLUTION_FIELDS,
       initial: s,
     });
@@ -448,7 +454,10 @@ async function handleCopy(kind, id) {
 
 async function handleDelete(kind, id) {
   const label = kind === "powder" ? "干粉" : "溶液";
-  const yes = await confirmDialog(`确定删除该<b>${label}条目 #${id}</b> 吗?<br>删除后不可恢复。`);
+  const arr = kind === "powder" ? state.lastPowders : state.lastSolutions;
+  const idx = arr.findIndex(x => x.id === id);
+  const seq = idx >= 0 ? idx + 1 : "";
+  const yes = await confirmDialog(`确定删除该<b>${label}条目 #${seq}</b> 吗?<br>删除后不可恢复。`);
   if (!yes) return;
   const r = await apiDelete(`/api/${kind === "powder" ? "powders" : "solutions"}/${id}`);
   toast(r.msg);
@@ -496,24 +505,24 @@ function init() {
   $("#btn-pick-powder").addEventListener("click", () => wrap(async () => {
     const r = await apiGet("/api/powders");
     if (!r.powders.length) return toast("仓库中没有干粉条目, 请先「购入」", "err");
-    const id = await pickEntry({
+    const res = await pickEntry({
       title: "选择干粉条目",
       columns: [
-        { key: "id", label: "编号" },
+        { key: "seq", label: "编号" },
         { key: "rna_name", label: "RNA 种类" },
         { key: "purchase_date", label: "购入日期" },
         { key: "amount", label: "购入量 (nmol)", align: "num" },
       ],
-      rows: r.powders.map(p => ({
-        id: p.id, rna_name: esc(p.rna_name), purchase_date: esc(p.purchase_date), amount: fmtNum(p.amount),
+      rows: r.powders.map((p, i) => ({
+        id: p.id, seq: i + 1, rna_name: esc(p.rna_name), purchase_date: esc(p.purchase_date), amount: fmtNum(p.amount),
       })),
       emptyHint: "暂无干粉条目",
     });
-    if (id === null || id === undefined) return;
-    const p = r.powders.find(x => x.id === id);
+    if (!res) return;
+    const p = r.powders.find(x => x.id === res.id);
     if (!p) return toast("条目已不存在", "err");
     state.powderId = p.id;
-    $("#sel-powder").textContent = `#${p.id} · ${p.rna_name} · ${p.purchase_date}`;
+    $("#sel-powder").textContent = `#${res.seq} · ${p.rna_name} · ${p.purchase_date}`;
     $("#sel-powder").classList.add("has");
     $("#pp-name").value = p.rna_name;
     $("#pp-date").value = p.purchase_date;
@@ -538,27 +547,27 @@ function init() {
   $("#btn-pick-solution").addEventListener("click", () => wrap(async () => {
     const r = await apiGet("/api/solutions");
     if (!r.solutions.length) return toast("仓库中没有溶液条目, 请先「配制」", "err");
-    const id = await pickEntry({
+    const res = await pickEntry({
       title: "选择溶液条目",
       columns: [
-        { key: "id", label: "编号" },
+        { key: "seq", label: "编号" },
         { key: "rna_name", label: "RNA 种类" },
         { key: "purchase_date", label: "购入日期" },
         { key: "prep_date", label: "配制日期" },
         { key: "concentration", label: "浓度 (μM)", align: "num" },
         { key: "remaining", label: "剩余量 (μL)", align: "num" },
       ],
-      rows: r.solutions.map(s => ({
-        id: s.id, rna_name: esc(s.rna_name), purchase_date: esc(s.purchase_date),
+      rows: r.solutions.map((s, i) => ({
+        id: s.id, seq: i + 1, rna_name: esc(s.rna_name), purchase_date: esc(s.purchase_date),
         prep_date: esc(s.prep_date), concentration: fmtNum(s.concentration, 4), remaining: fmtNum(s.remaining),
       })),
       emptyHint: "暂无溶液条目",
     });
-    if (id === null || id === undefined) return;
-    const s = r.solutions.find(x => x.id === id);
+    if (!res) return;
+    const s = r.solutions.find(x => x.id === res.id);
     if (!s) return toast("条目已不存在", "err");
     state.solutionId = s.id;
-    $("#sel-solution").textContent = `#${s.id} · ${s.rna_name}`;
+    $("#sel-solution").textContent = `#${res.seq} · ${s.rna_name}`;
     $("#sel-solution").classList.add("has");
     $("#up-name").value = s.rna_name;
     $("#up-date").value = s.purchase_date;

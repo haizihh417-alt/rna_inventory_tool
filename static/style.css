@@ -296,6 +296,7 @@ td.num, th.num { text-align: right; font-family: var(--mono); font-variant-numer
 .op-btn.del:hover { color: var(--red); border-color: rgba(255, 122, 122, .4); background: var(--red-dim); }
 .wh-actions { display: flex; gap: 8px; margin-left: auto; }
 .wh-actions .btn { padding: 7px 14px; font-size: 13px; letter-spacing: .08em; }
+.wh-tabs-row { display: flex; align-items: center; margin-bottom: 14px; }
 
 /* 选择弹窗里的表格 */
 table.pick tbody tr { cursor: pointer; }

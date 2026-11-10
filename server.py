@@ -198,7 +198,7 @@ class Handler(BaseHTTPRequestHandler):
         with db.db() as conn:
             pid = db.add_powder(conn, name, pdate, amount)
         return self.send_json({"ok": True,
-                               "msg": f"已登记干粉 #{pid}: {name} · {pdate} · {db.fmt_num(amount)} nmol"})
+                               "msg": f"已登记干粉: {name} · {pdate} · {db.fmt_num(amount)} nmol"})
 
     def _prepare(self, d):
         powder_id = _as_int(d.get("powder_id"))
@@ -232,7 +232,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"ok": False, "msg": err}, 400)
         with db.db() as conn:
             sid = db.add_solution(conn, *vals)
-        return self.send_json({"ok": True, "msg": f"已添加溶液条目 #{sid}: {vals[0]}"})
+        return self.send_json({"ok": True, "msg": f"已添加溶液条目: {vals[0]}"})
 
     def _update_powder(self, pid, d):
         name = str(d.get("rna_name", "")).strip()
@@ -248,7 +248,7 @@ class Handler(BaseHTTPRequestHandler):
             if db.get_powder(conn, pid) is None:
                 return self.send_json({"ok": False, "msg": "条目不存在"}, 404)
             db.update_powder(conn, pid, name, pdate, amount)
-        return self.send_json({"ok": True, "msg": f"干粉条目 #{pid} 已更新"})
+        return self.send_json({"ok": True, "msg": "干粉条目已更新"})
 
     def _update_solution(self, sid, d):
         vals, err = _solution_values(d)
@@ -258,7 +258,7 @@ class Handler(BaseHTTPRequestHandler):
             if db.get_solution(conn, sid) is None:
                 return self.send_json({"ok": False, "msg": "条目不存在"}, 404)
             db.update_solution(conn, sid, *vals)
-        return self.send_json({"ok": True, "msg": f"溶液条目 #{sid} 已更新"})
+        return self.send_json({"ok": True, "msg": "溶液条目已更新"})
 
     # ---- 静态文件 ------------------------------------------------
 
