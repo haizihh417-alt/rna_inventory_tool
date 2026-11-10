@@ -508,6 +508,34 @@ async function handleAddSolution() {
   await loadWarehouse();
 }
 
+/* ---------- 导出 / 导入 (多电脑同步) ---------- */
+async function exportData() {
+  const data = await apiGet("/api/export");
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `RNA库存_${todayStr()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast(`已导出 ${data.powders.length} 条干粉、${data.solutions.length} 条溶液`);
+}
+
+async function importData(file) {
+  const text = await file.text();
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch (e) {
+    throw new Error("文件不是有效的 JSON, 请确认选择的是本工具导出的文件");
+  }
+  const r = await apiPost("/api/import", payload);
+  toast(r.msg);
+  await loadWarehouse();
+}
+
 /* ---------- 事件绑定 ---------- */
 function init() {
   $("#p-date").value = todayStr();
@@ -633,6 +661,14 @@ function init() {
   });
   $("#btn-wh-refresh").addEventListener("click", () => wrap(loadWarehouse)());
   $("#btn-add-solution").addEventListener("click", () => wrap(handleAddSolution)());
+  $("#btn-export").addEventListener("click", () => wrap(exportData)());
+  $("#btn-import").addEventListener("click", () => $("#file-import").click());
+  $("#file-import").addEventListener("change", e => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!f) return;
+    wrap(() => importData(f))();
+  });
   $("#filter-powder").addEventListener("change", e => { state.powderFilter = e.target.value; renderWarehouse(); });
   $("#filter-solution").addEventListener("change", e => { state.solutionFilter = e.target.value; renderWarehouse(); });
 

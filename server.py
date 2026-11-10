@@ -7,6 +7,8 @@
 """
 
 import json
+import math
+import re
 import sys
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -18,6 +20,11 @@ import rna_db as db
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 DEFAULT_PORT = 8377
+MAX_IMPORT_BYTES = 5 * 1024 * 1024   # 导入文件上限 5 MB
+MAX_IMPORT_ROWS = 20000
+
+SYNC_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$")
 
 MIME = {
     ".html": "text/html; charset=utf-8",
@@ -76,6 +83,100 @@ def _solution_values(d):
     return (name, pdate, amount, prep, water, conc, remain), None
 
 
+# ---- 同步文件校验 ---------------------------------------------------
+
+def _valid_number(v, *, positive=False, non_negative=False):
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    v = float(v)
+    if not math.isfinite(v):
+        return None
+    if positive and v <= 0:
+        return None
+    if non_negative and v < 0:
+        return None
+    return v
+
+
+def _sync_id(v, *, required=True):
+    s = str(v or "").strip()
+    if not s:
+        if required:
+            raise ValueError("记录缺少同步标识 sync_id")
+        return ""
+    if not SYNC_ID_RE.match(s):
+        raise ValueError("同步标识 sync_id 格式不正确")
+    return s
+
+
+def _sync_ts(v):
+    s = str(v or "").strip()
+    if not s:
+        return db.now_ts()
+    if not TIMESTAMP_RE.match(s):
+        raise ValueError("更新时间 updated_at 格式不正确")
+    return s
+
+
+def _validate_sync_powder(d):
+    if not isinstance(d, dict):
+        raise ValueError("记录必须是 JSON 对象")
+    name = str(d.get("rna_name", "")).strip()
+    pdate = str(d.get("purchase_date", "")).strip()
+    amount = _valid_number(d.get("amount"), positive=True)
+    if not name:
+        raise ValueError("RNA 种类不能为空")
+    if not pdate:
+        raise ValueError("购入日期不能为空")
+    if amount is None:
+        raise ValueError("购入量必须是大于 0 的数字")
+    return {
+        "sync_id": _sync_id(d.get("sync_id")),
+        "rna_name": name,
+        "purchase_date": pdate,
+        "amount": amount,
+        "updated_at": _sync_ts(d.get("updated_at")),
+    }
+
+
+def _validate_sync_solution(d):
+    if not isinstance(d, dict):
+        raise ValueError("记录必须是 JSON 对象")
+    name = str(d.get("rna_name", "")).strip()
+    pdate = str(d.get("purchase_date", "")).strip()
+    prep = str(d.get("prep_date", "")).strip()
+    amount = _valid_number(d.get("amount"), positive=True)
+    water = _valid_number(d.get("water_vol"), positive=True)
+    conc = _valid_number(d.get("concentration"), positive=True)
+    remain = _valid_number(d.get("remaining"), non_negative=True)
+    if not name:
+        raise ValueError("RNA 种类不能为空")
+    if not pdate:
+        raise ValueError("购入日期不能为空")
+    if not prep:
+        raise ValueError("配制日期不能为空")
+    if amount is None:
+        raise ValueError("购入量必须是大于 0 的数字")
+    if water is None:
+        raise ValueError("ddH2O 量必须是大于 0 的数字")
+    if conc is None:
+        raise ValueError("配制浓度必须是大于 0 的数字")
+    if remain is None:
+        raise ValueError("剩余量不能为负数")
+    return {
+        "sync_id": _sync_id(d.get("sync_id")),
+        "rna_name": name,
+        "purchase_date": pdate,
+        "amount": amount,
+        "prep_date": prep,
+        "water_vol": water,
+        "concentration": conc,
+        "remaining": remain,
+        "source_sync_id": _sync_id(d.get("source_sync_id"), required=False),
+        "updated_at": _sync_ts(d.get("updated_at")),
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "RNAStock/1.0"
 
@@ -94,6 +195,8 @@ class Handler(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length") or 0)
             if n <= 0:
                 return {}
+            if n > MAX_IMPORT_BYTES:
+                raise ValueError("文件太大 (超过 5 MB), 请确认选择的是本工具导出的文件")
             return json.loads(self.rfile.read(n).decode("utf-8"))
         except Exception:
             raise ValueError("请求数据不是有效的 JSON")
@@ -118,6 +221,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/solutions":
                 with db.db() as conn:
                     return self.send_json({"ok": True, "solutions": db.list_solutions(conn)})
+            if path == "/api/export":
+                with db.db() as conn:
+                    return self.send_json(db.export_data(conn))
             return self.send_json({"ok": False, "msg": "接口不存在"}, 404)
         except Exception as e:
             return self.send_json({"ok": False, "msg": str(e)}, 500)
@@ -134,6 +240,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._use(data)
             if path == "/api/solutions":
                 return self._add_solution(data)
+            if path == "/api/import":
+                return self._import(data)
             return self.send_json({"ok": False, "msg": "接口不存在"}, 404)
         except ValueError as e:
             return self.send_json({"ok": False, "msg": str(e)}, 400)
@@ -259,6 +367,42 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"ok": False, "msg": "条目不存在"}, 404)
             db.update_solution(conn, sid, *vals)
         return self.send_json({"ok": True, "msg": "溶液条目已更新"})
+
+    def _import(self, d):
+        """合并导入另一台电脑导出的 JSON; 只新增/更新, 不删除本机条目"""
+        if not isinstance(d, dict):
+            return self.send_json({"ok": False, "msg": "导入文件格式不正确"}, 400)
+        powders = d.get("powders")
+        solutions = d.get("solutions")
+        if not isinstance(powders, list) or not isinstance(solutions, list):
+            return self.send_json(
+                {"ok": False, "msg": "导入文件格式不正确: 缺少 powders / solutions 列表"}, 400)
+        if len(powders) + len(solutions) > MAX_IMPORT_ROWS:
+            return self.send_json(
+                {"ok": False, "msg": f"导入条目过多 (超过 {MAX_IMPORT_ROWS} 条)"}, 400)
+
+        clean_p, clean_s = [], []
+        for i, rec in enumerate(powders, 1):
+            try:
+                clean_p.append(_validate_sync_powder(rec))
+            except ValueError as e:
+                return self.send_json(
+                    {"ok": False, "msg": f"第 {i} 条干粉记录: {e}"}, 400)
+        for i, rec in enumerate(solutions, 1):
+            try:
+                clean_s.append(_validate_sync_solution(rec))
+            except ValueError as e:
+                return self.send_json(
+                    {"ok": False, "msg": f"第 {i} 条溶液记录: {e}"}, 400)
+
+        with db.db() as conn:
+            stats = db.import_data(conn, clean_p, clean_s)
+        return self.send_json({
+            "ok": True,
+            "msg": (f"导入完成: 新增 {stats['added']} 条, 更新 {stats['updated']} 条, "
+                    f"跳过 {stats['skipped']} 条 (无变化或已是最新)"),
+            "stats": stats,
+        })
 
     # ---- 静态文件 ------------------------------------------------
 

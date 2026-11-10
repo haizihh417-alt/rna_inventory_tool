@@ -4,15 +4,40 @@
 单位约定:
   购入量 nmol; ddH2O 量 / 使用量 / 剩余量 μL; 配制浓度 μM (= 购入量 ÷ ddH2O 量 × 1000)。
 数据文件: 同目录 rna_inventory.db (测试时可用环境变量 RNA_DB_PATH 覆盖)。
+
+多台电脑同步:
+  每条记录带 sync_id (跨电脑唯一), 导出为 JSON; 导入时按 sync_id 合并:
+  不存在则新增, 存在且导出端更新时间更新则更新, 否则跳过。不做删除同步。
 """
 
 import os
 import sqlite3
+import uuid
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("RNA_DB_PATH", BASE_DIR / "rna_inventory.db"))
+
+SYNC_FORMAT = 1
+
+# 同步 JSON 中参与合并的字段
+POWDER_SYNC_FIELDS = ("rna_name", "purchase_date", "amount")
+SOLUTION_SYNC_FIELDS = ("rna_name", "purchase_date", "amount", "prep_date",
+                        "water_vol", "concentration", "remaining")
+NUMERIC_FIELDS = {"amount", "water_vol", "concentration", "remaining"}
+
+
+def new_sync_id():
+    """跨电脑唯一的记录标识"""
+    return uuid.uuid4().hex
+
+
+def now_ts():
+    """UTC 时间戳, 格式与字符串排序一致: 2026-11-10T12:34:56.789Z"""
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds") \
+        .replace("+00:00", "Z")
 
 
 def get_conn():
@@ -49,8 +74,39 @@ def init_db(conn):
     ver = conn.execute("PRAGMA user_version").fetchone()[0]
     if ver < 2:
         conn.execute("UPDATE solution SET concentration = round(concentration * 1000, 6)")
-        conn.execute("PRAGMA user_version = 2")
+    # v3 迁移: 多电脑同步所需的 sync_id / updated_at / source_sync_id
+    _ensure_sync_columns(conn)
+    conn.execute("PRAGMA user_version = 3")
     conn.commit()
+
+
+def _ensure_sync_columns(conn):
+    """为旧数据库补齐同步字段, 并给已有记录生成 sync_id"""
+    p_cols = {r[1] for r in conn.execute("PRAGMA table_info(powder)")}
+    if "sync_id" not in p_cols:
+        conn.execute("ALTER TABLE powder ADD COLUMN sync_id TEXT")
+    if "updated_at" not in p_cols:
+        conn.execute("ALTER TABLE powder ADD COLUMN updated_at TEXT")
+
+    s_cols = {r[1] for r in conn.execute("PRAGMA table_info(solution)")}
+    if "sync_id" not in s_cols:
+        conn.execute("ALTER TABLE solution ADD COLUMN sync_id TEXT")
+    if "updated_at" not in s_cols:
+        conn.execute("ALTER TABLE solution ADD COLUMN updated_at TEXT")
+    if "source_sync_id" not in s_cols:
+        conn.execute("ALTER TABLE solution ADD COLUMN source_sync_id TEXT DEFAULT ''")
+
+    for table in ("powder", "solution"):
+        rows = conn.execute(
+            f"SELECT id FROM {table} WHERE sync_id IS NULL OR sync_id = ''").fetchall()
+        for r in rows:
+            conn.execute(f"UPDATE {table} SET sync_id=? WHERE id=?",
+                         (new_sync_id(), r["id"]))
+        conn.execute(
+            f"UPDATE {table} SET updated_at=? WHERE updated_at IS NULL OR updated_at = ''",
+            (now_ts(),))
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_powder_sync ON powder(sync_id)")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_solution_sync ON solution(sync_id)")
 
 
 def fmt_num(x, nd=2):
@@ -62,8 +118,9 @@ def fmt_num(x, nd=2):
 
 def add_powder(conn, rna_name, purchase_date, amount):
     cur = conn.execute(
-        "INSERT INTO powder(rna_name, purchase_date, amount) VALUES(?,?,?)",
-        (rna_name, purchase_date, amount))
+        "INSERT INTO powder(rna_name, purchase_date, amount, sync_id, updated_at) "
+        "VALUES(?,?,?,?,?)",
+        (rna_name, purchase_date, amount, new_sync_id(), now_ts()))
     conn.commit()
     return cur.lastrowid
 
@@ -111,10 +168,12 @@ def prepare(conn, powder_id, prep_date, water_vol):
         return False, "ddH2O 量必须大于 0"
     concentration = round(p["amount"] / water_vol * 1000, 6)
     conn.execute(
-        "INSERT INTO solution(rna_name, purchase_date, amount, prep_date, water_vol, concentration, remaining) "
-        "VALUES(?,?,?,?,?,?,?)",
+        "INSERT INTO solution(rna_name, purchase_date, amount, prep_date, water_vol, "
+        "concentration, remaining, source_sync_id, sync_id, updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?)",
         (p["rna_name"], p["purchase_date"], p["amount"], prep_date,
-         water_vol, concentration, water_vol))
+         water_vol, concentration, water_vol, p.get("sync_id") or "",
+         new_sync_id(), now_ts()))
     conn.execute("DELETE FROM powder WHERE id=?", (powder_id,))
     conn.commit()
     return True, (f"配制完成: 浓度 {fmt_num(concentration, 4)} μM, "
@@ -133,7 +192,8 @@ def use_solution(conn, solution_id, usage):
     if usage > s["remaining"] + 1e-9:
         return False, f"使用量({fmt_num(usage)} μL)超过当前剩余量({fmt_num(s['remaining'])} μL)"
     new_remaining = round(s["remaining"] - usage, 6)
-    conn.execute("UPDATE solution SET remaining=? WHERE id=?", (new_remaining, solution_id))
+    conn.execute("UPDATE solution SET remaining=?, updated_at=? WHERE id=?",
+                 (new_remaining, now_ts(), solution_id))
     conn.commit()
     return True, f"已记录使用, 剩余量 {fmt_num(new_remaining)} μL"
 
@@ -141,8 +201,9 @@ def use_solution(conn, solution_id, usage):
 # -- 编辑 / 直接添加 -------------------------------------------------
 
 def update_powder(conn, pid, rna_name, purchase_date, amount):
-    conn.execute("UPDATE powder SET rna_name=?, purchase_date=?, amount=? WHERE id=?",
-                 (rna_name, purchase_date, amount, pid))
+    conn.execute(
+        "UPDATE powder SET rna_name=?, purchase_date=?, amount=?, updated_at=? WHERE id=?",
+        (rna_name, purchase_date, amount, now_ts(), pid))
     conn.commit()
 
 
@@ -150,9 +211,9 @@ def update_solution(conn, sid, rna_name, purchase_date, amount, prep_date,
                     water_vol, concentration, remaining):
     conn.execute(
         "UPDATE solution SET rna_name=?, purchase_date=?, amount=?, prep_date=?, "
-        "water_vol=?, concentration=?, remaining=? WHERE id=?",
+        "water_vol=?, concentration=?, remaining=?, updated_at=? WHERE id=?",
         (rna_name, purchase_date, amount, prep_date,
-         water_vol, concentration, remaining, sid))
+         water_vol, concentration, remaining, now_ts(), sid))
     conn.commit()
 
 
@@ -161,8 +222,91 @@ def add_solution(conn, rna_name, purchase_date, amount, prep_date,
     """直接添加溶液条目(已有库存, 独立于干粉仓库), 不消耗干粉"""
     cur = conn.execute(
         "INSERT INTO solution(rna_name, purchase_date, amount, prep_date, "
-        "water_vol, concentration, remaining) VALUES(?,?,?,?,?,?,?)",
+        "water_vol, concentration, remaining, sync_id, updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?)",
         (rna_name, purchase_date, amount, prep_date,
-         water_vol, concentration, remaining))
+         water_vol, concentration, remaining, new_sync_id(), now_ts()))
     conn.commit()
     return cur.lastrowid
+
+
+# -- 多电脑同步: 导出 / 导入 ------------------------------------------
+
+def export_data(conn):
+    """导出全部条目为可跨电脑合并的 JSON 结构(不含本机自增 id)"""
+    powders = [dict(r) for r in conn.execute(
+        "SELECT sync_id, rna_name, purchase_date, amount, updated_at "
+        "FROM powder ORDER BY purchase_date, id")]
+    solutions = [dict(r) for r in conn.execute(
+        "SELECT sync_id, rna_name, purchase_date, amount, prep_date, water_vol, "
+        "concentration, remaining, source_sync_id, updated_at "
+        "FROM solution ORDER BY purchase_date, id")]
+    return {
+        "app": "rna_inventory",
+        "format": SYNC_FORMAT,
+        "exported_at": now_ts(),
+        "powders": powders,
+        "solutions": solutions,
+    }
+
+
+def _same_content_where(fields):
+    parts = []
+    for f in fields:
+        if f in NUMERIC_FIELDS:
+            parts.append(f"abs({f} - ?) < 1e-9")
+        else:
+            parts.append(f"{f} = ?")
+    return " AND ".join(parts)
+
+
+def _merge_row(conn, table, rec, fields, stats):
+    """按 sync_id 合并单条记录; 无该 ID 时再按全部字段查重, 避免两边各录一次产生重复"""
+    sync_id = rec["sync_id"]
+    ts = rec.get("updated_at") or now_ts()
+    vals = [rec[f] for f in fields]
+    row = conn.execute(f"SELECT * FROM {table} WHERE sync_id=?", (sync_id,)).fetchone()
+
+    if row is None:
+        dup = conn.execute(
+            f"SELECT id FROM {table} WHERE {_same_content_where(fields)}", vals).fetchone()
+        if dup is not None:
+            stats["skipped"] += 1
+            return
+        cols = ["sync_id", *fields, "updated_at"]
+        vals_out = [sync_id, *vals, ts]
+        if table == "solution":
+            cols.append("source_sync_id")
+            vals_out.append(rec.get("source_sync_id") or "")
+        conn.execute(
+            f"INSERT INTO {table}({','.join(cols)}) "
+            f"VALUES({','.join('?' * len(cols))})", vals_out)
+        stats["added"] += 1
+    elif (row["updated_at"] or "") and ts <= row["updated_at"]:
+        stats["skipped"] += 1
+        return
+    else:
+        sets = [f"{f}=?" for f in fields] + ["updated_at=?"]
+        vals_out = [*vals, ts]
+        if table == "solution":
+            sets.append("source_sync_id=?")
+            vals_out.append(rec.get("source_sync_id") or row["source_sync_id"] or "")
+        conn.execute(
+            f"UPDATE {table} SET {','.join(sets)} WHERE sync_id=?",
+            (*vals_out, sync_id))
+        stats["updated"] += 1
+
+    # 溶液由某条干粉配制而来: 若本机还留着那条干粉, 删除它(跨电脑时保持生命周期一致)
+    if table == "solution" and rec.get("source_sync_id"):
+        conn.execute("DELETE FROM powder WHERE sync_id=?", (rec["source_sync_id"],))
+
+
+def import_data(conn, powders, solutions):
+    """合并导入; 返回新增/更新/跳过计数"""
+    stats = {"added": 0, "updated": 0, "skipped": 0}
+    for rec in powders:
+        _merge_row(conn, "powder", rec, POWDER_SYNC_FIELDS, stats)
+    for rec in solutions:
+        _merge_row(conn, "solution", rec, SOLUTION_SYNC_FIELDS, stats)
+    conn.commit()
+    return stats
