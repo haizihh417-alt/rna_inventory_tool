@@ -132,3 +132,33 @@ def use_solution(conn, solution_id, usage):
     conn.execute("UPDATE solution SET remaining=? WHERE id=?", (new_remaining, solution_id))
     conn.commit()
     return True, f"已记录使用, 剩余量 {fmt_num(new_remaining)} μL"
+
+
+# -- 编辑 / 直接添加 -------------------------------------------------
+
+def update_powder(conn, pid, rna_name, purchase_date, amount):
+    conn.execute("UPDATE powder SET rna_name=?, purchase_date=?, amount=? WHERE id=?",
+                 (rna_name, purchase_date, amount, pid))
+    conn.commit()
+
+
+def update_solution(conn, sid, rna_name, purchase_date, amount, prep_date,
+                    water_vol, concentration, remaining):
+    conn.execute(
+        "UPDATE solution SET rna_name=?, purchase_date=?, amount=?, prep_date=?, "
+        "water_vol=?, concentration=?, remaining=? WHERE id=?",
+        (rna_name, purchase_date, amount, prep_date,
+         water_vol, concentration, remaining, sid))
+    conn.commit()
+
+
+def add_solution(conn, rna_name, purchase_date, amount, prep_date,
+                 water_vol, concentration, remaining):
+    """直接添加溶液条目(已有库存, 独立于干粉仓库), 不消耗干粉"""
+    cur = conn.execute(
+        "INSERT INTO solution(rna_name, purchase_date, amount, prep_date, "
+        "water_vol, concentration, remaining) VALUES(?,?,?,?,?,?,?)",
+        (rna_name, purchase_date, amount, prep_date,
+         water_vol, concentration, remaining))
+    conn.commit()
+    return cur.lastrowid

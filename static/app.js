@@ -41,6 +41,11 @@ const apiPost = (p, body) => api(p, {
   body: JSON.stringify(body),
 });
 const apiDelete = p => api(p, { method: "DELETE" });
+const apiPut = (p, body) => api(p, {
+  method: "PUT",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(body),
+});
 
 const wrap = fn => async (...a) => {
   try { return await fn(...a); }
@@ -131,6 +136,85 @@ function confirmDialog(msgHtml) {
   });
 }
 
+/* ---------- 表单弹窗 (编辑 / 新增) ---------- */
+function openFormModal({ title, fields, initial }) {
+  return new Promise(resolve => {
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    overlay.innerHTML = `
+      <div class="modal">
+        <div class="modal-head"><span>${esc(title)}</span><button class="modal-x">✕</button></div>
+        <div class="modal-body"></div>
+        <div class="modal-foot">
+          <button class="btn ghost" data-cancel>取消</button>
+          <button class="btn primary" data-ok>保存</button>
+        </div>
+      </div>`;
+    const body = $(".modal-body", overlay);
+    const form = document.createElement("div");
+    form.className = "form";
+    const inputs = {};
+    fields.forEach(f => {
+      const div = document.createElement("div");
+      div.className = "field";
+      const label = document.createElement("label");
+      label.textContent = f.label;
+      if (f.unit) {
+        const u = document.createElement("span");
+        u.className = "unit";
+        u.textContent = f.unit;
+        label.appendChild(u);
+      }
+      const inp = document.createElement("input");
+      inp.type = f.type || "text";
+      if (inp.type === "number") {
+        inp.step = "any";
+        inp.min = f.min !== undefined ? f.min : 0;
+        inp.classList.add("num");
+      }
+      inp.placeholder = f.placeholder || "";
+      const initVal = initial && initial[f.key] !== undefined && initial[f.key] !== null
+        ? initial[f.key] : (f.value || "");
+      inp.value = initVal;
+      div.appendChild(label);
+      div.appendChild(inp);
+      form.appendChild(div);
+      inputs[f.key] = inp;
+    });
+    body.appendChild(form);
+    /* 自动计算字段(如浓度 = 购入量 ÷ ddH2O 量 × 1000) */
+    fields.forEach(f => {
+      if (f.autoFrom && f.autoCalc) {
+        const recompute = () => {
+          const vals = f.autoFrom.map(k => parseFloat(inputs[k].value));
+          if (vals.every(v => !isNaN(v) && v > 0)) {
+            inputs[f.key].value = fmtNum(f.autoCalc(...vals), 4);
+          }
+        };
+        f.autoFrom.forEach(k => inputs[k].addEventListener("input", recompute));
+      }
+    });
+    const done = v => { overlay.remove(); resolve(v); };
+    $("[data-ok]", overlay).addEventListener("click", () => {
+      const out = {};
+      for (const f of fields) {
+        const raw = inputs[f.key].value.trim();
+        if (f.required && raw === "") {
+          toast(`${f.label} 不能为空`, "err");
+          inputs[f.key].focus();
+          return;
+        }
+        out[f.key] = f.type === "number" ? parseFloat(raw) : raw;
+      }
+      done(out);
+    });
+    $("[data-cancel]", overlay).addEventListener("click", () => done(null));
+    $(".modal-x", overlay).addEventListener("click", () => done(null));
+    overlay.addEventListener("click", e => { if (e.target === overlay) done(null); });
+    document.body.appendChild(overlay);
+  });
+}
+
 /* ---------- 状态 ---------- */
 const state = {
   view: "purchase",
@@ -138,6 +222,8 @@ const state = {
   powderId: null,
   solutionId: null,
   whTab: "powder",
+  lastPowders: [],
+  lastSolutions: [],
 };
 
 /* ---------- 视图切换 ---------- */
@@ -256,9 +342,20 @@ const SOLUTION_COLS = [
   { key: "remaining", label: "剩余量 (μL)", align: "num" },
 ];
 
+const SOLUTION_FIELDS = [
+  { key: "rna_name", label: "RNA 种类", type: "text", required: true },
+  { key: "purchase_date", label: "购入日期", type: "date", required: true },
+  { key: "amount", label: "购入量", unit: "nmol", type: "number", required: true },
+  { key: "prep_date", label: "配制日期", type: "date", required: true },
+  { key: "water_vol", label: "ddH2O 量", unit: "μL", type: "number", required: true },
+  { key: "concentration", label: "配制浓度", unit: "μM", type: "number", required: true,
+    autoFrom: ["amount", "water_vol"], autoCalc: (a, w) => a / w * 1000 },
+  { key: "remaining", label: "剩余量", unit: "μL", type: "number", required: true },
+];
+
 function renderTable(el, columns, rows, kind) {
   if (!rows.length) {
-    el.innerHTML = `<div class="empty">暂无${kind === "powder" ? "干粉" : "溶液"}条目 — 请先${kind === "powder" ? "「购入」登记" : "「配制」生成"}</div>`;
+    el.innerHTML = `<div class="empty">暂无${kind === "powder" ? "干粉" : "溶液"}条目 — 请先${kind === "powder" ? "「购入」登记" : "「配制」生成或点右上角「添加溶液」"}</div>`;
     return;
   }
   el.innerHTML =
@@ -268,31 +365,106 @@ function renderTable(el, columns, rows, kind) {
     rows.map(r =>
       `<tr>` +
       columns.map(c => `<td class="${c.align || ""}">${r[c.key]}</td>`).join("") +
-      `<td><button class="del-btn" data-del data-kind="${kind}" data-id="${r.id}">删除</button></td></tr>`
+      `<td><button class="op-btn" data-edit data-kind="${kind}" data-id="${r.id}">编辑</button>` +
+      `<button class="op-btn" data-copy data-kind="${kind}" data-id="${r.id}">复制</button>` +
+      `<button class="op-btn del" data-del data-kind="${kind}" data-id="${r.id}">删除</button></td></tr>`
     ).join("") +
     `</tbody></table>`;
 }
 
+const fmtPowder = x => ({
+  id: x.id, rna_name: esc(x.rna_name), purchase_date: esc(x.purchase_date),
+  amount: fmtNum(x.amount),
+});
+const fmtSolution = x => ({
+  id: x.id, rna_name: esc(x.rna_name), purchase_date: esc(x.purchase_date),
+  amount: fmtNum(x.amount), prep_date: esc(x.prep_date),
+  water_vol: fmtNum(x.water_vol), concentration: fmtNum(x.concentration, 4),
+  remaining: fmtNum(x.remaining),
+});
+
 async function loadWarehouse() {
   const [p, s] = await Promise.all([apiGet("/api/powders"), apiGet("/api/solutions")]);
-  renderTable($("#table-powder"), POWDER_COLS, p.powders.map(x => ({
-    id: x.id,
-    rna_name: esc(x.rna_name),
-    purchase_date: esc(x.purchase_date),
-    amount: fmtNum(x.amount),
-  })), "powder");
-  renderTable($("#table-solution"), SOLUTION_COLS, s.solutions.map(x => ({
-    id: x.id,
-    rna_name: esc(x.rna_name),
-    purchase_date: esc(x.purchase_date),
-    amount: fmtNum(x.amount),
-    prep_date: esc(x.prep_date),
-    water_vol: fmtNum(x.water_vol),
-    concentration: fmtNum(x.concentration, 4),
-    remaining: fmtNum(x.remaining),
-  })), "solution");
+  state.lastPowders = p.powders;
+  state.lastSolutions = s.solutions;
+  renderTable($("#table-powder"), POWDER_COLS, p.powders.map(fmtPowder), "powder");
+  renderTable($("#table-solution"), SOLUTION_COLS, s.solutions.map(fmtSolution), "solution");
   $("#cnt-powder").textContent = p.powders.length;
   $("#cnt-solution").textContent = s.solutions.length;
+}
+
+/* ---------- 仓库行操作: 编辑 / 复制 / 删除 / 添加溶液 ---------- */
+
+async function handleEdit(kind, id) {
+  if (kind === "powder") {
+    const p = state.lastPowders.find(x => x.id === id);
+    if (!p) return toast("条目已不存在", "err");
+    const v = await openFormModal({
+      title: `编辑干粉条目 #${id}`,
+      fields: [
+        { key: "rna_name", label: "RNA 种类", type: "text", required: true },
+        { key: "purchase_date", label: "购入日期", type: "date", required: true },
+        { key: "amount", label: "购入量", unit: "nmol", type: "number", required: true },
+      ],
+      initial: p,
+    });
+    if (!v) return;
+    const r = await apiPut(`/api/powders/${id}`, v);
+    toast(r.msg);
+  } else {
+    const s = state.lastSolutions.find(x => x.id === id);
+    if (!s) return toast("条目已不存在", "err");
+    const v = await openFormModal({
+      title: `编辑溶液条目 #${id}`,
+      fields: SOLUTION_FIELDS,
+      initial: s,
+    });
+    if (!v) return;
+    const r = await apiPut(`/api/solutions/${id}`, v);
+    toast(r.msg);
+  }
+  await loadWarehouse();
+}
+
+async function handleCopy(kind, id) {
+  if (kind === "powder") {
+    const p = state.lastPowders.find(x => x.id === id);
+    if (!p) return toast("条目已不存在", "err");
+    const r = await apiPost("/api/powders",
+      { rna_name: p.rna_name, purchase_date: p.purchase_date, amount: p.amount });
+    toast(r.msg);
+  } else {
+    const s = state.lastSolutions.find(x => x.id === id);
+    if (!s) return toast("条目已不存在", "err");
+    const r = await apiPost("/api/solutions", {
+      rna_name: s.rna_name, purchase_date: s.purchase_date, amount: s.amount,
+      prep_date: s.prep_date, water_vol: s.water_vol,
+      concentration: s.concentration, remaining: s.remaining,
+    });
+    toast(r.msg);
+  }
+  await loadWarehouse();
+}
+
+async function handleDelete(kind, id) {
+  const label = kind === "powder" ? "干粉" : "溶液";
+  const yes = await confirmDialog(`确定删除该<b>${label}条目 #${id}</b> 吗?<br>删除后不可恢复。`);
+  if (!yes) return;
+  const r = await apiDelete(`/api/${kind === "powder" ? "powders" : "solutions"}/${id}`);
+  toast(r.msg);
+  await loadWarehouse();
+}
+
+async function handleAddSolution() {
+  const v = await openFormModal({
+    title: "添加溶液条目 (已有库存)",
+    fields: SOLUTION_FIELDS,
+    initial: { purchase_date: todayStr(), prep_date: todayStr() },
+  });
+  if (!v) return;
+  const r = await apiPost("/api/solutions", v);
+  toast(r.msg);
+  await loadWarehouse();
 }
 
 /* ---------- 事件绑定 ---------- */
@@ -408,22 +580,18 @@ function init() {
     resetUse();
   })());
 
-  /* 仓库删除(事件委托) */
+  /* 仓库行操作(编辑/复制/删除) + 刷新 + 添加溶液 */
   document.addEventListener("click", e => {
-    const btn = e.target.closest("[data-del]");
-    if (!btn) return;
-    const { kind, id } = btn.dataset;
-    const label = kind === "powder" ? "干粉" : "溶液";
-    (async () => {
-      const yes = await confirmDialog(`确定删除该<b>${label}条目 #${id}</b> 吗?<br>删除后不可恢复。`);
-      if (!yes) return;
-      await wrap(async () => {
-        const r = await apiDelete(`/api/${kind === "powder" ? "powders" : "solutions"}/${id}`);
-        toast(r.msg);
-        loadWarehouse();
-      })();
-    })();
+    const t = e.target.closest("[data-del],[data-edit],[data-copy]");
+    if (!t) return;
+    const { kind } = t.dataset;
+    const id = Number(t.dataset.id);
+    if (t.hasAttribute("data-del")) wrap(() => handleDelete(kind, id))();
+    else if (t.hasAttribute("data-edit")) wrap(() => handleEdit(kind, id))();
+    else wrap(() => handleCopy(kind, id))();
   });
+  $("#btn-wh-refresh").addEventListener("click", () => wrap(loadWarehouse)());
+  $("#btn-add-solution").addEventListener("click", () => wrap(handleAddSolution)());
 
   switchView("purchase");
 }

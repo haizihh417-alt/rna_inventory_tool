@@ -285,15 +285,17 @@ table.table tbody tr { transition: background .12s; }
 table.table tbody tr:hover { background: rgba(47, 230, 184, .05); }
 td.num, th.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
 
-.del-btn {
+.op-btn {
   border: 1px solid transparent; background: transparent;
   color: var(--ink-dim); font-family: var(--sans);
-  font-size: 12.5px; letter-spacing: .1em;
-  padding: 5px 12px; border-radius: 6px; cursor: pointer;
+  font-size: 12px; letter-spacing: .08em;
+  padding: 4px 9px; margin-right: 2px; border-radius: 6px; cursor: pointer;
   transition: color .15s, border-color .15s, background .15s;
 }
-tr:hover .del-btn { color: var(--red); border-color: rgba(255, 122, 122, .35); }
-.del-btn:hover { background: var(--red-dim); }
+.op-btn:hover { color: var(--teal-hi); border-color: rgba(47, 230, 184, .4); background: var(--teal-dim); }
+.op-btn.del:hover { color: var(--red); border-color: rgba(255, 122, 122, .4); background: var(--red-dim); }
+.wh-actions { display: flex; gap: 8px; margin-left: auto; }
+.wh-actions .btn { padding: 7px 14px; font-size: 13px; letter-spacing: .08em; }
 
 /* 选择弹窗里的表格 */
 table.pick tbody tr { cursor: pointer; }

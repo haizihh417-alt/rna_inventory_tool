@@ -43,6 +43,39 @@ def _as_int(v):
         return None
 
 
+def _path_id(path):
+    try:
+        return int(path.rsplit("/", 1)[1])
+    except (ValueError, IndexError):
+        return None
+
+
+def _solution_values(d):
+    """校验并返回溶液条目字段 (name, pdate, amount, prep, water, conc, remain)"""
+    name = str(d.get("rna_name", "")).strip()
+    pdate = str(d.get("purchase_date", "")).strip()
+    prep = str(d.get("prep_date", "")).strip()
+    amount = _as_float(d.get("amount"))
+    water = _as_float(d.get("water_vol"))
+    conc = _as_float(d.get("concentration"))
+    remain = _as_float(d.get("remaining"))
+    if not name:
+        return None, "请输入 RNA 种类"
+    if not pdate:
+        return None, "请输入购入日期"
+    if not prep:
+        return None, "请输入配制日期"
+    if amount is None or amount <= 0:
+        return None, "购入量必须是大于 0 的数字"
+    if water is None or water <= 0:
+        return None, "ddH2O 量必须大于 0"
+    if conc is None or conc <= 0:
+        return None, "配制浓度必须大于 0"
+    if remain is None or remain < 0:
+        return None, "剩余量不能为负数"
+    return (name, pdate, amount, prep, water, conc, remain), None
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "RNAStock/1.0"
 
@@ -99,6 +132,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._prepare(data)
             if path == "/api/use":
                 return self._use(data)
+            if path == "/api/solutions":
+                return self._add_solution(data)
             return self.send_json({"ok": False, "msg": "接口不存在"}, 404)
         except ValueError as e:
             return self.send_json({"ok": False, "msg": str(e)}, 400)
@@ -125,6 +160,26 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"ok": False, "msg": "接口不存在"}, 404)
         except ValueError:
             return self.send_json({"ok": False, "msg": "无效的编号"}, 400)
+        except Exception as e:
+            return self.send_json({"ok": False, "msg": str(e)}, 500)
+
+    def do_PUT(self):
+        path = urlparse(self.path).path
+        try:
+            data = self.read_json()
+            if path.startswith("/api/powders/"):
+                pid = _path_id(path)
+                if pid is None:
+                    return self.send_json({"ok": False, "msg": "无效的编号"}, 400)
+                return self._update_powder(pid, data)
+            if path.startswith("/api/solutions/"):
+                sid = _path_id(path)
+                if sid is None:
+                    return self.send_json({"ok": False, "msg": "无效的编号"}, 400)
+                return self._update_solution(sid, data)
+            return self.send_json({"ok": False, "msg": "接口不存在"}, 404)
+        except ValueError as e:
+            return self.send_json({"ok": False, "msg": str(e)}, 400)
         except Exception as e:
             return self.send_json({"ok": False, "msg": str(e)}, 500)
 
@@ -169,6 +224,41 @@ class Handler(BaseHTTPRequestHandler):
         with db.db() as conn:
             ok, msg = db.use_solution(conn, solution_id, usage)
         return self.send_json({"ok": ok, "msg": msg}, 200 if ok else 400)
+
+    def _add_solution(self, d):
+        """直接添加溶液条目(已有库存), 独立于干粉仓库"""
+        vals, err = _solution_values(d)
+        if err:
+            return self.send_json({"ok": False, "msg": err}, 400)
+        with db.db() as conn:
+            sid = db.add_solution(conn, *vals)
+        return self.send_json({"ok": True, "msg": f"已添加溶液条目 #{sid}: {vals[0]}"})
+
+    def _update_powder(self, pid, d):
+        name = str(d.get("rna_name", "")).strip()
+        pdate = str(d.get("purchase_date", "")).strip()
+        amount = _as_float(d.get("amount"))
+        if not name:
+            return self.send_json({"ok": False, "msg": "请输入 RNA 种类"}, 400)
+        if not pdate:
+            return self.send_json({"ok": False, "msg": "请输入购入日期"}, 400)
+        if amount is None or amount <= 0:
+            return self.send_json({"ok": False, "msg": "购入量必须是大于 0 的数字"}, 400)
+        with db.db() as conn:
+            if db.get_powder(conn, pid) is None:
+                return self.send_json({"ok": False, "msg": "条目不存在"}, 404)
+            db.update_powder(conn, pid, name, pdate, amount)
+        return self.send_json({"ok": True, "msg": f"干粉条目 #{pid} 已更新"})
+
+    def _update_solution(self, sid, d):
+        vals, err = _solution_values(d)
+        if err:
+            return self.send_json({"ok": False, "msg": err}, 400)
+        with db.db() as conn:
+            if db.get_solution(conn, sid) is None:
+                return self.send_json({"ok": False, "msg": "条目不存在"}, 404)
+            db.update_solution(conn, sid, *vals)
+        return self.send_json({"ok": True, "msg": f"溶液条目 #{sid} 已更新"})
 
     # ---- 静态文件 ------------------------------------------------
 
