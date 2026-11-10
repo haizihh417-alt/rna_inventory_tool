@@ -31,6 +31,10 @@ python server.py 9000     # 指定端口
 
 数据保存在同目录 `rna_inventory.db`（SQLite，首次运行自动创建，已加入 .gitignore）。
 
+## 更新日志
+
+详见 [CHANGELOG.md](CHANGELOG.md)。
+
 ## 技术栈
 
 Python 标准库（http.server + sqlite3）+ 原生 HTML/CSS/JS，无任何第三方依赖。
